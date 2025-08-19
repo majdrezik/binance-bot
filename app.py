@@ -81,57 +81,57 @@ def webhook():
     data = request.get_json()
     action = (data.get("action") or data.get("side") or "").upper()
     symbol = (data.get("symbol") or DEFAULT_SYMBOL).upper()
-    quantity = data.get("quantity") or data.get("qty")
-    quote_qty = data.get("quoteQty") or data.get("amount")
     order_type = (data.get("order_type") or "MARKET").upper()
+    max_pct = float(data.get("max_pct", 100))  # default 100%
 
     if action not in ("BUY", "SELL"):
         return jsonify({"error": "action must be BUY or SELL"}), 400
-
     if order_type != "MARKET":
-        return jsonify({"error": "only MARKET supported in this demo"}), 400
+        return jsonify({"error": "only MARKET supported"}), 400
 
     if not TRADING_ENABLED:
         return jsonify({"status": "dry-run", "symbol": symbol, "action": action}), 200
 
     try:
-        if quantity:
-            order = client.new_order(
-            symbol=symbol, side=action, type="MARKET", quantity=str(quantity)
-            )
-        else:
-            spend = float(quote_qty) if quote_qty else DEFAULT_QUOTE_QTY
+        # Fetch current balances
+        balances = {b['asset']: float(b['free']) for b in client.account()['balances']}
+
+        if action == "BUY":
+            usdt_balance = balances.get("USDT", 0)
+            spend = usdt_balance * max_pct / 100
             order = client.new_order(
                 symbol=symbol, side=action, type="MARKET", quoteOrderQty=str(spend)
             )
-
-        # Send simplified email
-        if order:
-            fills = order.get("fills", [{}])
-            fill = fills[0] if fills else {}
-
-            body = f"""
-                Action: {order.get('side')}
-                Symbol: {order.get('symbol')}
-                Quantity: {order.get('executedQty')}
-                Price: {fill.get('price', 'N/A')}
-                MODE: {MODE}
-                Status: {order.get('status')}
-                Commission: {fill.get('commission', '0')} {fill.get('commissionAsset', '')}
-                Type: {order.get('type')}
-                TransactTime: {order.get('transactTime')}
-            """
-
-            send_email(
-                subject=f"{order.get('side')} order executed on {order.get('symbol')}",
-                body=body
+        else:  # SELL
+            base_asset = symbol.replace("USDT", "")
+            asset_balance = balances.get(base_asset, 0)
+            qty_to_sell = asset_balance * max_pct / 100
+            order = client.new_order(
+                symbol=symbol, side=action, type="MARKET", quantity=str(qty_to_sell)
             )
+
+        # Email simplified info
+        fills = order.get("fills", [{}])
+        fill = fills[0] if fills else {}
+        body = f"""
+Action: {order.get('side')}
+Symbol: {order.get('symbol')}
+Quantity: {order.get('executedQty')}
+Price: {fill.get('price', 'N/A')}
+Mode: {MODE}
+Status: {order.get('status')}
+Commission: {fill.get('commission', '0')} {fill.get('commissionAsset', '')}
+Type: {order.get('type')}
+TransactTime: {order.get('transactTime')}
+"""
+        send_email(subject=f"{order.get('side')} executed {order.get('symbol')}", body=body)
 
         return jsonify({"status": "filled", "order": order}), 200
 
     except Exception as e:
-        send_email(subject=f"{action} order FAILED", body=str(e))
+        send_email(subject=f"{action} FAILED", body=str(e))
         return jsonify({"error": str(e)}), 500
+
 # ---------------------------
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=8000)
